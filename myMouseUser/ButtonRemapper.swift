@@ -2,13 +2,6 @@
 //  ButtonRemapper.swift
 //  MouseSpaceSwitcher
 //
-//  Final working version with:
-//  ✔ HID side button detection
-//  ✔ Blocking default macOS back/forward
-//  ✔ Mouse-only scroll inversion
-//  ✔ Trackpad scroll untouched
-//  ✔ Full debug logs
-//
 
 import Foundation
 import IOKit.hid
@@ -24,11 +17,10 @@ class ButtonRemapper {
         setupHIDButtonListener()
         setupScrollEventTap()
         setupButtonBlockerEventTap()
-        NSLog("[Remapper] Ready")
     }
 
     // -----------------------
-    // MARK: - HID BUTTON LISTENER
+    // HID BUTTON LISTENER
     // -----------------------
 
     func setupHIDButtonListener() {
@@ -43,13 +35,11 @@ class ButtonRemapper {
         IOHIDManagerRegisterInputValueCallback(manager, hidCallback, nil)
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
         IOHIDManagerOpen(manager, 0)
-
-        NSLog("[HID] Listener started")
     }
 }
 
 // ---------------------------------------------------
-// HID Callback → Detect side buttons 4/5
+// HID Callback (Side buttons 4 & 5)
 // ---------------------------------------------------
 
 private func hidCallback(
@@ -63,53 +53,45 @@ private func hidCallback(
     let page = IOHIDElementGetUsagePage(elem)
 
     if page != kHIDPage_Button { return }
-    if IOHIDValueGetIntegerValue(value) != 1 { return }  // only on press
+    if IOHIDValueGetIntegerValue(value) != 1 { return }
 
     if usage == 4 {
-        NSLog("[HID] Button 4 → Ctrl + Left Arrow")
         sendCtrlArrow(key: 0x7B) // left arrow
     }
 
     if usage == 5 {
-        NSLog("[HID] Button 5 → Ctrl + Right Arrow")
         sendCtrlArrow(key: 0x7C) // right arrow
     }
 }
 
 // ---------------------------------------------------
-// REAL Ctrl + Arrow Key Simulation
+// REAL Control + Arrow simulation (perfect method)
 // ---------------------------------------------------
 
 func sendCtrlArrow(key: CGKeyCode) {
     guard let src = CGEventSource(stateID: .hidSystemState) else { return }
 
-    let ctrlKey: CGKeyCode = 0x3B  // Control key
+    let ctrlKey: CGKeyCode = 0x3B  // Control
 
-    // Control DOWN
     let ctrlDown = CGEvent(keyboardEventSource: src, virtualKey: ctrlKey, keyDown: true)!
     ctrlDown.post(tap: .cghidEventTap)
 
-    // --- Tiny reliable delay (MACOS NEEDS THIS) ---
-    usleep(1000) // 1 millisecond
+    usleep(1000) // ensure modifier is registered
 
-    // Arrow DOWN
     let arrowDown = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true)!
     arrowDown.post(tap: .cghidEventTap)
 
-    // Arrow UP
     let arrowUp = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: false)!
     arrowUp.post(tap: .cghidEventTap)
 
-    // --- Another tiny delay before releasing control ---
-    usleep(1000) // 1 millisecond
+    usleep(1000)
 
-    // Control UP
     let ctrlUp = CGEvent(keyboardEventSource: src, virtualKey: ctrlKey, keyDown: false)!
     ctrlUp.post(tap: .cghidEventTap)
 }
 
 // ---------------------------------------------------
-// SCROLL INVERSION — ONLY FOR MOUSE
+// SCROLL INVERSION — MOUSE ONLY
 // ---------------------------------------------------
 
 extension ButtonRemapper {
@@ -128,9 +110,6 @@ extension ButtonRemapper {
         if let tap = scrollTap {
             let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
             CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-            NSLog("[Scroll] Tap installed")
-        } else {
-            NSLog("[Scroll] ERROR installing tap")
         }
     }
 }
@@ -146,12 +125,10 @@ private func scrollCallback(
 
     let isContinuous = event.getIntegerValueField(.scrollWheelEventIsContinuous)
 
-    // Trackpad → untouched
     if isContinuous == 1 {
-        return Unmanaged.passRetained(event)
+        return Unmanaged.passRetained(event) // trackpad
     }
 
-    // Mouse → invert scroll
     let dy = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
     let fy = event.getIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1)
     let py = event.getDoubleValueField(.scrollWheelEventPointDeltaAxis1)
@@ -164,7 +141,7 @@ private func scrollCallback(
 }
 
 // ---------------------------------------------------
-// BLOCK DEFAULT BACK/FORWARD
+// BLOCK DEFAULT BACK/FORWARD (Button 4/5)
 // ---------------------------------------------------
 
 extension ButtonRemapper {
@@ -190,9 +167,6 @@ extension ButtonRemapper {
         if let tap = buttonBlockerTap {
             let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
             CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
-            NSLog("[Block] Tap installed")
-        } else {
-            NSLog("[Block] ERROR installing tap")
         }
     }
 }
@@ -206,9 +180,8 @@ private func blockSideButtonCallback(
 
     let button = event.getIntegerValueField(.mouseEventButtonNumber)
 
-    // Common: 3, 4, 5
     if button == 3 || button == 4 || button == 5 {
-        return nil  // BLOCK macOS default action
+        return nil // BLOCK
     }
 
     return Unmanaged.passRetained(event)
