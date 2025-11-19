@@ -1,17 +1,12 @@
-//
-//  myMouseUserApp.swift
-//  myMouseUser
-//
-//  Created by Om Ambarkar on 19/11/25.
-//
-
 import SwiftUI
 
 @main
-struct myMouseUserApp: App {
+struct MouseSpaceSwitcherApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        Settings {
+            EmptyView()
         }
     }
 }
