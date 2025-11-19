@@ -17,14 +17,14 @@ import Cocoa
 class ButtonRemapper {
 
     var manager: IOHIDManager!
-    var eventTap: CFMachPort?
+    var scrollTap: CFMachPort?
     var buttonBlockerTap: CFMachPort?
 
     init() {
         setupHIDButtonListener()
         setupScrollEventTap()
-        setupButtonBlockerEventTap()   // <--- IMPORTANT
-        NSLog("[Remapper] Initialized")
+        setupButtonBlockerEventTap()
+        NSLog("[Remapper] Ready")
     }
 
     // -----------------------
@@ -32,9 +32,9 @@ class ButtonRemapper {
     // -----------------------
 
     func setupHIDButtonListener() {
-        manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+        manager = IOHIDManagerCreate(kCFAllocatorDefault, 0)
 
-        let matching = [
+        let matching: CFDictionary = [
             kIOHIDDeviceUsagePageKey: kHIDPage_GenericDesktop,
             kIOHIDDeviceUsageKey: kHIDUsage_GD_Mouse
         ] as CFDictionary
@@ -42,14 +42,14 @@ class ButtonRemapper {
         IOHIDManagerSetDeviceMatching(manager, matching)
         IOHIDManagerRegisterInputValueCallback(manager, hidCallback, nil)
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
-        IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        IOHIDManagerOpen(manager, 0)
 
-        NSLog("[Remapper] HID manager started")
+        NSLog("[HID] Listener started")
     }
 }
 
 // ---------------------------------------------------
-// HID Callback — detects side buttons via IOHID
+// HID Callback → Detect side buttons 4/5
 // ---------------------------------------------------
 
 private func hidCallback(
@@ -63,49 +63,60 @@ private func hidCallback(
     let page = IOHIDElementGetUsagePage(elem)
 
     if page != kHIDPage_Button { return }
+    if IOHIDValueGetIntegerValue(value) != 1 { return }  // only on press
 
-    let pressed = IOHIDValueGetIntegerValue(value) == 1
-    if !pressed { return }
+    if usage == 4 {
+        NSLog("[HID] Button 4 → Ctrl + Left Arrow")
+        sendCtrlArrow(key: 0x7B) // left arrow
+    }
 
-    NSLog("[HID] Button usage \(usage) pressed")
-
-    // Side buttons usually usage 4 or 5
-    if usage == 4 || usage == 5 {
-        NSLog("[HID] Side button pressed → triggering CMD+F")
-        triggerTestShortcut()
+    if usage == 5 {
+        NSLog("[HID] Button 5 → Ctrl + Right Arrow")
+        sendCtrlArrow(key: 0x7C) // right arrow
     }
 }
 
 // ---------------------------------------------------
-// CMD + F Shortcut Trigger
+// REAL Ctrl + Arrow Key Simulation
 // ---------------------------------------------------
 
-func triggerTestShortcut() {
-    sendKeyCombo(key: 0x03, flags: .maskCommand)
-}
-
-func sendKeyCombo(key: CGKeyCode, flags: CGEventFlags) {
+func sendCtrlArrow(key: CGKeyCode) {
     guard let src = CGEventSource(stateID: .hidSystemState) else { return }
 
-    let down = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true)
-    down?.flags = flags
-    let up = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: false)
-    up?.flags = flags
+    let ctrlKey: CGKeyCode = 0x3B  // Control key
 
-    down?.post(tap: .cghidEventTap)
-    up?.post(tap: .cghidEventTap)
+    // Control DOWN
+    let ctrlDown = CGEvent(keyboardEventSource: src, virtualKey: ctrlKey, keyDown: true)!
+    ctrlDown.post(tap: .cghidEventTap)
+
+    // --- Tiny reliable delay (MACOS NEEDS THIS) ---
+    usleep(1000) // 1 millisecond
+
+    // Arrow DOWN
+    let arrowDown = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true)!
+    arrowDown.post(tap: .cghidEventTap)
+
+    // Arrow UP
+    let arrowUp = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: false)!
+    arrowUp.post(tap: .cghidEventTap)
+
+    // --- Another tiny delay before releasing control ---
+    usleep(1000) // 1 millisecond
+
+    // Control UP
+    let ctrlUp = CGEvent(keyboardEventSource: src, virtualKey: ctrlKey, keyDown: false)!
+    ctrlUp.post(tap: .cghidEventTap)
 }
 
 // ---------------------------------------------------
-// SCROLL WHEEL FIX — invert only mouse
+// SCROLL INVERSION — ONLY FOR MOUSE
 // ---------------------------------------------------
 
 extension ButtonRemapper {
-
     func setupScrollEventTap() {
         let mask = (1 << CGEventType.scrollWheel.rawValue)
 
-        eventTap = CGEvent.tapCreate(
+        scrollTap = CGEvent.tapCreate(
             tap: .cghidEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
@@ -114,12 +125,12 @@ extension ButtonRemapper {
             userInfo: nil
         )
 
-        if let eventTap = eventTap {
-            let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
-            CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
-            NSLog("[Remapper] Scroll event tap installed")
+        if let tap = scrollTap {
+            let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+            NSLog("[Scroll] Tap installed")
         } else {
-            NSLog("[Remapper] ERROR installing scroll event tap")
+            NSLog("[Scroll] ERROR installing tap")
         }
     }
 }
@@ -134,34 +145,26 @@ private func scrollCallback(
     guard type == .scrollWheel else { return Unmanaged.passRetained(event) }
 
     let isContinuous = event.getIntegerValueField(.scrollWheelEventIsContinuous)
-    let deltaY = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
-    let fixedY = event.getIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1)
-    let pointY = event.getDoubleValueField(.scrollWheelEventPointDeltaAxis1)
 
-    NSLog("[ScrollDebug] isContinuous=\(isContinuous), delta=\(deltaY), fixed=\(fixedY), point=\(pointY)")
-
+    // Trackpad → untouched
     if isContinuous == 1 {
-        NSLog("[ScrollDetect] TRACKPAD → no inversion")
         return Unmanaged.passRetained(event)
     }
 
-    // Mouse → invert all relevant fields
-    if deltaY != 0 {
-        event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: -deltaY)
-    }
-    if fixedY != 0 {
-        event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1, value: -fixedY)
-    }
-    if pointY != 0 {
-        event.setDoubleValueField(.scrollWheelEventPointDeltaAxis1, value: -pointY)
-    }
+    // Mouse → invert scroll
+    let dy = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+    let fy = event.getIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1)
+    let py = event.getDoubleValueField(.scrollWheelEventPointDeltaAxis1)
 
-    NSLog("[ScrollAction] MOUSE → inverted delta")
+    if dy != 0 { event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: -dy) }
+    if fy != 0 { event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1, value: -fy) }
+    if py != 0 { event.setDoubleValueField(.scrollWheelEventPointDeltaAxis1, value: -py) }
+
     return Unmanaged.passRetained(event)
 }
 
 // ---------------------------------------------------
-// BLOCK SIDE BUTTON DEFAULT ACTIONS
+// BLOCK DEFAULT BACK/FORWARD
 // ---------------------------------------------------
 
 extension ButtonRemapper {
@@ -187,9 +190,9 @@ extension ButtonRemapper {
         if let tap = buttonBlockerTap {
             let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
             CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
-            NSLog("[Remapper] Button blocker event tap installed")
+            NSLog("[Block] Tap installed")
         } else {
-            NSLog("[Remapper] ERROR installing button blocker tap")
+            NSLog("[Block] ERROR installing tap")
         }
     }
 }
@@ -201,14 +204,11 @@ private func blockSideButtonCallback(
     refcon: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
 
-    let btn = event.getIntegerValueField(.mouseEventButtonNumber)
+    let button = event.getIntegerValueField(.mouseEventButtonNumber)
 
-    NSLog("[BlockDebug] type=\(type.rawValue), btn=\(btn)")
-
-    // Many mice report side buttons as 3, 4, or 5
-    if btn == 3 || btn == 4 || btn == 5 {
-        NSLog("[ButtonBlock] BLOCKED side button \(btn)")
-        return nil  // <-- BLOCK the default macOS action
+    // Common: 3, 4, 5
+    if button == 3 || button == 4 || button == 5 {
+        return nil  // BLOCK macOS default action
     }
 
     return Unmanaged.passRetained(event)
